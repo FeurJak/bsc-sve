@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"math/big"
 	"os"
 	"path"
@@ -28,7 +29,6 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/consensus/misc/eip1559"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -39,7 +39,7 @@ import (
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/ethereum/go-ethereum/rlp"
 	"github.com/ethereum/go-ethereum/tests"
-	"github.com/urfave/cli/v2"
+	"gopkg.in/urfave/cli.v1"
 )
 
 const (
@@ -181,6 +181,7 @@ func Transition(ctx *cli.Context) error {
 
 	vmConfig := vm.Config{
 		Tracer: tracer,
+		Debug:  (tracer != nil),
 	}
 	// Construct the chainconfig
 	var chainConfig *params.ChainConfig
@@ -241,45 +242,22 @@ func Transition(ctx *cli.Context) error {
 		}
 	}
 	// We may have to sign the transactions.
-	signer := types.MakeSigner(chainConfig, big.NewInt(int64(prestate.Env.Number)), prestate.Env.Timestamp)
+	signer := types.MakeSigner(chainConfig, big.NewInt(int64(prestate.Env.Number)))
 
 	if txs, err = signUnsignedTransactions(txsWithKeys, signer); err != nil {
 		return NewError(ErrorJson, fmt.Errorf("failed signing transactions: %v", err))
 	}
 	// Sanity check, to not `panic` in state_transition
 	if chainConfig.IsLondon(big.NewInt(int64(prestate.Env.Number))) {
-		if prestate.Env.BaseFee != nil {
-			// Already set, base fee has precedent over parent base fee.
-		} else if prestate.Env.ParentBaseFee != nil && prestate.Env.Number != 0 {
-			parent := &types.Header{
-				Number:   new(big.Int).SetUint64(prestate.Env.Number - 1),
-				BaseFee:  prestate.Env.ParentBaseFee,
-				GasUsed:  prestate.Env.ParentGasUsed,
-				GasLimit: prestate.Env.ParentGasLimit,
-			}
-			prestate.Env.BaseFee = eip1559.CalcBaseFee(chainConfig, parent)
-		} else {
+		if prestate.Env.BaseFee == nil {
 			return NewError(ErrorConfig, errors.New("EIP-1559 config but missing 'currentBaseFee' in env section"))
 		}
 	}
-	if chainConfig.IsShanghai(big.NewInt(int64(prestate.Env.Number)), prestate.Env.Timestamp) && prestate.Env.Withdrawals == nil {
-		return NewError(ErrorConfig, errors.New("Shanghai config but missing 'withdrawals' in env section"))
+	// Sanity check, to not `panic` in state_transition
+	if prestate.Env.Random != nil && !chainConfig.IsLondon(big.NewInt(int64(prestate.Env.Number))) {
+		return NewError(ErrorConfig, errors.New("can only apply RANDOM on top of London chainrules"))
 	}
-	isMerged := chainConfig.TerminalTotalDifficulty != nil && chainConfig.TerminalTotalDifficulty.BitLen() == 0
-	env := prestate.Env
-	if isMerged {
-		// post-merge:
-		// - random must be supplied
-		// - difficulty must be zero
-		switch {
-		case env.Random == nil:
-			return NewError(ErrorConfig, errors.New("post-merge requires currentRandom to be defined in env"))
-		case env.Difficulty != nil && env.Difficulty.BitLen() != 0:
-			return NewError(ErrorConfig, errors.New("post-merge difficulty must be zero (or omitted) in env"))
-		}
-		prestate.Env.Difficulty = nil
-	} else if env.Difficulty == nil {
-		// pre-merge:
+	if env := prestate.Env; env.Difficulty == nil {
 		// If difficulty was not provided by caller, we need to calculate it.
 		switch {
 		case env.ParentDifficulty == nil:
@@ -390,10 +368,7 @@ type Alloc map[common.Address]core.GenesisAccount
 
 func (g Alloc) OnRoot(common.Hash) {}
 
-func (g Alloc) OnAccount(addr *common.Address, dumpAccount state.DumpAccount) {
-	if addr == nil {
-		return
-	}
+func (g Alloc) OnAccount(addr common.Address, dumpAccount state.DumpAccount) {
 	balance, _ := new(big.Int).SetString(dumpAccount.Balance, 10)
 	var storage map[common.Hash]common.Hash
 	if dumpAccount.Storage != nil {
@@ -408,17 +383,17 @@ func (g Alloc) OnAccount(addr *common.Address, dumpAccount state.DumpAccount) {
 		Balance: balance,
 		Nonce:   dumpAccount.Nonce,
 	}
-	g[*addr] = genesisAccount
+	g[addr] = genesisAccount
 }
 
-// saveFile marshals the object to the given file
+// saveFile marshalls the object to the given file
 func saveFile(baseDir, filename string, data interface{}) error {
 	b, err := json.MarshalIndent(data, "", " ")
 	if err != nil {
 		return NewError(ErrorJson, fmt.Errorf("failed marshalling output: %v", err))
 	}
 	location := path.Join(baseDir, filename)
-	if err = os.WriteFile(location, b, 0644); err != nil {
+	if err = ioutil.WriteFile(location, b, 0644); err != nil {
 		return NewError(ErrorIO, fmt.Errorf("failed writing output: %v", err))
 	}
 	log.Info("Wrote file", "file", location)

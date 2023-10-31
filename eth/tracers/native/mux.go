@@ -26,7 +26,7 @@ import (
 )
 
 func init() {
-	tracers.DefaultDirectory.Register("muxTracer", newMuxTracer, false)
+	register("muxTracer", newMuxTracer)
 }
 
 // muxTracer is a go implementation of the Tracer interface which
@@ -47,7 +47,7 @@ func newMuxTracer(ctx *tracers.Context, cfg json.RawMessage) (tracers.Tracer, er
 	objects := make([]tracers.Tracer, 0, len(config))
 	names := make([]string, 0, len(config))
 	for k, v := range config {
-		t, err := tracers.DefaultDirectory.New(k, ctx, v)
+		t, err := tracers.New(k, ctx, v)
 		if err != nil {
 			return nil, err
 		}

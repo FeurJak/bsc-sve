@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -34,7 +35,6 @@ import (
 	"github.com/ethereum/go-ethereum/internal/jsre"
 	"github.com/ethereum/go-ethereum/internal/jsre/deps"
 	"github.com/ethereum/go-ethereum/internal/web3ext"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/mattn/go-colorable"
 	"github.com/peterh/liner"
@@ -158,7 +158,7 @@ func (c *Console) init(preload []string) error {
 
 	// Configure the input prompter for history and tab completion.
 	if c.prompter != nil {
-		if content, err := os.ReadFile(c.histPath); err != nil {
+		if content, err := ioutil.ReadFile(c.histPath); err != nil {
 			c.prompter.SetHistory(nil)
 		} else {
 			c.history = strings.Split(string(content), "\n")
@@ -179,10 +179,12 @@ func (c *Console) initConsoleObject() {
 }
 
 func (c *Console) initWeb3(bridge *bridge) error {
-	if err := c.jsre.Compile("bignumber.js", deps.BigNumberJS); err != nil {
+	bnJS := string(deps.MustAsset("bignumber.js"))
+	web3JS := string(deps.MustAsset("web3.js"))
+	if err := c.jsre.Compile("bignumber.js", bnJS); err != nil {
 		return fmt.Errorf("bignumber.js: %v", err)
 	}
-	if err := c.jsre.Compile("web3.js", deps.Web3JS); err != nil {
+	if err := c.jsre.Compile("web3.js", web3JS); err != nil {
 		return fmt.Errorf("web3.js: %v", err)
 	}
 	if _, err := c.jsre.Run("var Web3 = require('web3');"); err != nil {
@@ -199,23 +201,14 @@ func (c *Console) initWeb3(bridge *bridge) error {
 	return err
 }
 
-var defaultAPIs = map[string]string{"eth": "1.0", "net": "1.0", "debug": "1.0"}
-
 // initExtensions loads and registers web3.js extensions.
 func (c *Console) initExtensions() error {
-	const methodNotFound = -32601
+	// Compute aliases from server-provided modules.
 	apis, err := c.client.SupportedModules()
 	if err != nil {
-		if rpcErr, ok := err.(rpc.Error); ok && rpcErr.ErrorCode() == methodNotFound {
-			log.Warn("Server does not support method rpc_modules, using default API list.")
-			apis = defaultAPIs
-		} else {
-			return err
-		}
+		return fmt.Errorf("api modules: %v", err)
 	}
-
-	// Compute aliases from server-provided modules.
-	aliases := map[string]struct{}{"eth": {}}
+	aliases := map[string]struct{}{"eth": {}, "personal": {}}
 	for api := range apis {
 		if api == "web3" {
 			continue
@@ -260,7 +253,6 @@ func (c *Console) initPersonal(vm *goja.Runtime, bridge *bridge) {
 	if personal == nil || c.prompter == nil {
 		return
 	}
-	log.Warn("Enabling deprecated personal namespace")
 	jeth := vm.NewObject()
 	vm.Set("jeth", jeth)
 	jeth.Set("openWallet", personal.Get("openWallet"))
@@ -301,13 +293,17 @@ func (c *Console) AutoCompleteInput(line string, pos int) (string, []string, str
 	if len(line) == 0 || pos == 0 {
 		return "", nil, ""
 	}
-	// Chunk data to relevant part for autocompletion
+	// Chunck data to relevant part for autocompletion
 	// E.g. in case of nested lines eth.getBalance(eth.coinb<tab><tab>
 	start := pos - 1
 	for ; start > 0; start-- {
 		// Skip all methods and namespaces (i.e. including the dot)
-		c := line[start]
-		if c == '.' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '1' && c <= '9') {
+		if line[start] == '.' || (line[start] >= 'a' && line[start] <= 'z') || (line[start] >= 'A' && line[start] <= 'Z') {
+			continue
+		}
+		// Handle web3 in a special way (i.e. other numbers aren't auto completed)
+		if start >= 3 && line[start-3:start] == "web3" {
+			start -= 3
 			continue
 		}
 		// We've hit an unexpected character, autocomplete form here
@@ -414,7 +410,7 @@ func (c *Console) StopInteractive() {
 	}
 }
 
-// Interactive starts an interactive user session, where input is prompted from
+// Interactive starts an interactive user session, where in.put is propted from
 // the configured user prompter.
 func (c *Console) Interactive() {
 	var (
@@ -504,7 +500,7 @@ func (c *Console) readLines(input chan<- string, errc chan<- error, prompt <-cha
 	}
 }
 
-// countIndents returns the number of indentations for the given input.
+// countIndents returns the number of identations for the given input.
 // In case of invalid input such as var a = } the result can be negative.
 func countIndents(input string) int {
 	var (
@@ -547,6 +543,11 @@ func countIndents(input string) int {
 	return indents
 }
 
+// Execute runs the JavaScript file specified as the argument.
+func (c *Console) Execute(path string) error {
+	return c.jsre.Exec(path)
+}
+
 // Stop cleans up the console and terminates the runtime environment.
 func (c *Console) Stop(graceful bool) error {
 	c.stopOnce.Do(func() {
@@ -560,7 +561,7 @@ func (c *Console) Stop(graceful bool) error {
 }
 
 func (c *Console) writeHistory() error {
-	if err := os.WriteFile(c.histPath, []byte(strings.Join(c.history, "\n")), 0600); err != nil {
+	if err := ioutil.WriteFile(c.histPath, []byte(strings.Join(c.history, "\n")), 0600); err != nil {
 		return err
 	}
 	return os.Chmod(c.histPath, 0600) // Force 0600, even if it was different previously

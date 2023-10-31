@@ -499,14 +499,8 @@ func nextNode(it iterator.Iterator) *Node {
 	return nil
 }
 
-// Close flushes and closes the database files.
+// close flushes and closes the database files.
 func (db *DB) Close() {
 	close(db.quit)
 	db.lvl.Close()
-}
-
-func (db *DB) Size() int64 {
-	var stats leveldb.DBStats
-	db.lvl.Stats(&stats)
-	return stats.LevelSizes.Sum()
 }

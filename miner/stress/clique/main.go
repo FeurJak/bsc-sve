@@ -20,6 +20,7 @@ package main
 import (
 	"bytes"
 	"crypto/ecdsa"
+	"io/ioutil"
 	"math/big"
 	"math/rand"
 	"os"
@@ -30,8 +31,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/fdlimit"
 	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/txpool"
-	"github.com/ethereum/go-ethereum/core/txpool/legacypool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth"
@@ -58,7 +57,7 @@ func main() {
 	for i := 0; i < len(sealers); i++ {
 		sealers[i], _ = crypto.GenerateKey()
 	}
-	// Create a Clique network based off of the Sepolia config
+	// Create a Clique network based off of the Rinkeby config
 	genesis := makeGenesis(faucets, sealers)
 
 	// Handle interrupts.
@@ -105,7 +104,7 @@ func main() {
 	// Iterate over all the nodes and start signing on them
 	time.Sleep(3 * time.Second)
 	for _, node := range nodes {
-		if err := node.StartMining(); err != nil {
+		if err := node.StartMining(1); err != nil {
 			panic(err)
 		}
 	}
@@ -133,7 +132,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		if err := backend.TxPool().Add([]*txpool.Transaction{{Tx: tx}}, true, false); err != nil {
+		if err := backend.TxPool().AddLocal(tx); err != nil {
 			panic(err)
 		}
 		nonces[index]++
@@ -154,6 +153,7 @@ func makeGenesis(faucets []*ecdsa.PrivateKey, sealers []*ecdsa.PrivateKey) *core
 
 	genesis.Config.ChainID = big.NewInt(18)
 	genesis.Config.Clique.Period = 1
+	genesis.Config.EIP150Hash = common.Hash{}
 
 	genesis.Alloc = core.GenesisAlloc{}
 	for _, faucet := range faucets {
@@ -183,7 +183,7 @@ func makeGenesis(faucets []*ecdsa.PrivateKey, sealers []*ecdsa.PrivateKey) *core
 
 func makeSealer(genesis *core.Genesis) (*node.Node, *eth.Ethereum, error) {
 	// Define the basic configurations for the Ethereum node
-	datadir, _ := os.MkdirTemp("", "")
+	datadir, _ := ioutil.TempDir("", "")
 
 	config := &node.Config{
 		Name:    "geth",
@@ -207,7 +207,7 @@ func makeSealer(genesis *core.Genesis) (*node.Node, *eth.Ethereum, error) {
 		SyncMode:        downloader.FullSync,
 		DatabaseCache:   256,
 		DatabaseHandles: 256,
-		TxPool:          legacypool.DefaultConfig,
+		TxPool:          core.DefaultTxPoolConfig,
 		GPO:             ethconfig.Defaults.GPO,
 		Miner: miner.Config{
 			GasCeil:  genesis.GasLimit * 11 / 10,

@@ -8,7 +8,6 @@ import (
 	"github.com/ethereum/go-ethereum/consensus/clique"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/txpool/legacypool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -16,7 +15,6 @@ import (
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/trie"
 )
 
 var (
@@ -33,7 +31,7 @@ var (
 type testBackend struct {
 	db     ethdb.Database
 	chain  *core.BlockChain
-	txpool *legacypool.LegacyPool
+	txpool *core.TxPool
 }
 
 // newTestBackend creates an empty chain and wraps it into a mock backend.
@@ -48,15 +46,15 @@ func newTestBackendWithGenerator(blocks int) *testBackend {
 	db := rawdb.NewMemoryDatabase()
 	engine := clique.New(params.AllCliqueProtocolChanges.Clique, db)
 	genspec := &core.Genesis{
-		Config:    params.AllCliqueProtocolChanges,
+		//Config:    params.TestChainConfig,
 		ExtraData: make([]byte, 32+common.AddressLength+65),
 		Alloc:     core.GenesisAlloc{testAddr: {Balance: big.NewInt(100000000000000000)}},
 		BaseFee:   big.NewInt(0),
 	}
 	copy(genspec.ExtraData[32:], testAddr[:])
-	genesis := genspec.MustCommit(db, trie.NewDatabase(db, nil))
+	genesis := genspec.MustCommit(db)
 
-	chain, _ := core.NewBlockChain(db, nil, genspec, nil, engine, vm.Config{}, nil, nil)
+	chain, _ := core.NewBlockChain(db, nil, params.AllCliqueProtocolChanges, engine, vm.Config{}, nil, nil)
 	generator := func(i int, block *core.BlockGen) {
 		// The chain maker doesn't have access to a chain, so the difficulty will be
 		// lets unset (nil). Set it here to the correct value.
@@ -90,19 +88,19 @@ func newTestBackendWithGenerator(blocks int) *testBackend {
 		panic(err)
 	}
 
-	txconfig := legacypool.DefaultConfig
+	txconfig := core.DefaultTxPoolConfig
 	txconfig.Journal = "" // Don't litter the disk with test journals
 
 	return &testBackend{
 		db:     db,
 		chain:  chain,
-		txpool: legacypool.New(txconfig, chain),
+		txpool: core.NewTxPool(txconfig, params.AllCliqueProtocolChanges, chain),
 	}
 }
 
 // close tears down the transaction pool and chain behind the mock backend.
 func (b *testBackend) close() {
-	b.txpool.Close()
+	b.txpool.Stop()
 	b.chain.Stop()
 }
 

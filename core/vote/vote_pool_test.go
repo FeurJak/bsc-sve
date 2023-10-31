@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -143,14 +144,16 @@ func TestInvalidVotePool(t *testing.T) {
 func testVotePool(t *testing.T, isValidRules bool) {
 	walletPasswordDir, walletDir := setUpKeyManager(t)
 
-	genesis := &core.Genesis{
+	// Create a database pre-initialize with a genesis block
+	db := rawdb.NewMemoryDatabase()
+	(&core.Genesis{
 		Config: params.TestChainConfig,
 		Alloc:  core.GenesisAlloc{testAddr: {Balance: big.NewInt(1000000)}},
-	}
+	}).MustCommit(db)
+
+	chain, _ := core.NewBlockChain(db, nil, params.TestChainConfig, ethash.NewFullFaker(), vm.Config{}, nil, nil)
 
 	mux := new(event.TypeMux)
-	db := rawdb.NewMemoryDatabase()
-	chain, _ := core.NewBlockChain(db, nil, genesis, nil, ethash.NewFullFaker(), vm.Config{}, nil, nil)
 
 	var mockEngine consensus.PoSA
 	if isValidRules {
@@ -160,11 +163,11 @@ func testVotePool(t *testing.T, isValidRules bool) {
 	}
 
 	// Create vote pool
-	votePool := NewVotePool(chain, mockEngine)
+	votePool := NewVotePool(params.TestChainConfig, chain, mockEngine)
 
 	// Create vote manager
 	// Create a temporary file for the votes journal
-	file, err := os.CreateTemp("", "")
+	file, err := ioutil.TempFile("", "")
 	if err != nil {
 		t.Fatalf("failed to create temporary file path: %v", err)
 	}
@@ -175,7 +178,7 @@ func testVotePool(t *testing.T, isValidRules bool) {
 	file.Close()
 	os.Remove(journal)
 
-	voteManager, err := NewVoteManager(newTestBackend(), chain, votePool, journal, walletPasswordDir, walletDir, mockEngine)
+	voteManager, err := NewVoteManager(newTestBackend(), params.TestChainConfig, chain, votePool, journal, walletPasswordDir, walletDir, mockEngine)
 	if err != nil {
 		t.Fatalf("failed to create vote managers")
 	}
@@ -414,7 +417,7 @@ func setUpKeyManager(t *testing.T) (string, string) {
 	if err := os.MkdirAll(filepath.Dir(walletPasswordDir), 0700); err != nil {
 		t.Fatalf("failed to create walletPassword dir: %v", err)
 	}
-	if err := os.WriteFile(walletPasswordDir, []byte(password), 0600); err != nil {
+	if err := ioutil.WriteFile(walletPasswordDir, []byte(password), 0600); err != nil {
 		t.Fatalf("failed to write wallet password dir: %v", err)
 	}
 

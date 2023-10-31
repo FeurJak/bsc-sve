@@ -3,7 +3,8 @@ package bsc
 import (
 	"time"
 
-	mapset "github.com/deckarep/golang-set/v2"
+	mapset "github.com/deckarep/golang-set"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
@@ -163,7 +164,7 @@ func (p *Peer) broadcastVotes() {
 
 // knownCache is a cache for known hashes.
 type knownCache struct {
-	hashes mapset.Set[common.Hash]
+	hashes mapset.Set
 	max    int
 }
 
@@ -171,7 +172,7 @@ type knownCache struct {
 func newKnownCache(max int) *knownCache {
 	return &knownCache{
 		max:    max,
-		hashes: mapset.NewSet[common.Hash](),
+		hashes: mapset.NewSet(),
 	}
 }
 

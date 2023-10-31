@@ -17,33 +17,36 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/internal/flags"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/urfave/cli/v2"
+	"gopkg.in/urfave/cli.v1"
 )
 
 var (
+	// Git SHA1 commit hash of the release (set via linker flags)
+	gitCommit = ""
+	gitDate   = ""
+
 	app *cli.App
 
-	senderFlag = &cli.StringFlag{
+	senderFlag = cli.StringFlag{
 		Name:  "sender",
 		Usage: "raw private key in hex format without 0x prefix; check permission on your own",
 	}
-	nodeFlag = &cli.StringFlag{
+	nodeFlag = cli.StringFlag{
 		Name:  "node",
 		Usage: "rpc endpoint, http,https,ws,wss,ipc are supported",
 	}
-	chainIdFlag = &cli.UintFlag{
+	chainIdFlag = cli.UintFlag{
 		Name:  "chainId",
 		Usage: "chainId, can get by eth_chainId",
 	}
-	evidenceFlag = &cli.StringFlag{
+	evidenceFlag = cli.StringFlag{
 		Name:  "evidence",
 		Usage: "params for submitFinalityViolationEvidence in json format; string",
 	}
 )
 
 func init() {
-	app = flags.NewApp("a tool for submitting the evidence of malicious voting")
-	app.Name = "maliciousvote-submit"
+	app = flags.NewApp(gitCommit, gitDate, "a tool for submitting the evidence of malicious voting")
 	app.Flags = []cli.Flag{
 		senderFlag,
 		nodeFlag,
@@ -51,11 +54,12 @@ func init() {
 		evidenceFlag,
 	}
 	app.Action = submitMaliciousVotes
+	cli.CommandHelpTemplate = flags.AppHelpTemplate
 }
 
-func submitMaliciousVotes(c *cli.Context) error {
+func submitMaliciousVotes(c *cli.Context) {
 	// get sender
-	senderRawKey := c.String(senderFlag.Name)
+	senderRawKey := c.GlobalString(senderFlag.Name)
 	if senderRawKey == "" {
 		log.Crit("no sender specified (--sender)")
 	}
@@ -67,7 +71,7 @@ func submitMaliciousVotes(c *cli.Context) error {
 	}
 
 	// connect to the given URL
-	nodeURL := c.String(nodeFlag.Name)
+	nodeURL := c.GlobalString(nodeFlag.Name)
 	if nodeURL == "" {
 		log.Crit("no node specified (--node)")
 	}
@@ -82,7 +86,7 @@ func submitMaliciousVotes(c *cli.Context) error {
 	}
 
 	// get chainId
-	chainId := c.Uint(chainIdFlag.Name)
+	chainId := c.GlobalUint(chainIdFlag.Name)
 	if chainId == 0 {
 		log.Crit("no chainId specified (--chainId)")
 	} else {
@@ -90,7 +94,7 @@ func submitMaliciousVotes(c *cli.Context) error {
 	}
 
 	// get evidence
-	evidenceJson := c.String(evidenceFlag.Name)
+	evidenceJson := c.GlobalString(evidenceFlag.Name)
 	if evidenceJson == "" {
 		log.Crit("no evidence specified (--evidence)")
 	}
@@ -123,8 +127,6 @@ func submitMaliciousVotes(c *cli.Context) error {
 	if rc == nil {
 		log.Crit("submitMaliciousVotes: submit evidence failed")
 	}
-
-	return nil
 }
 
 func main() {
@@ -134,4 +136,5 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+
 }

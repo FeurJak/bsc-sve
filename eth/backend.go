@@ -23,6 +23,8 @@ import (
 	"math/big"
 	"runtime"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
@@ -36,8 +38,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/monitor"
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/core/state/pruner"
-	"github.com/ethereum/go-ethereum/core/txpool"
-	"github.com/ethereum/go-ethereum/core/txpool/legacypool"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/core/vote"
@@ -74,7 +74,7 @@ type Ethereum struct {
 	config *ethconfig.Config
 
 	// Handlers
-	txPool              *txpool.TxPool
+	txPool              *core.TxPool
 	blockchain          *core.BlockChain
 	handler             *handler
 	ethDialCandidates   enode.Iterator
@@ -101,7 +101,7 @@ type Ethereum struct {
 	etherbase common.Address
 
 	networkID     uint64
-	netRPCService *ethapi.NetAPI
+	netRPCService *ethapi.PublicNetAPI
 
 	p2pServer *p2p.Server
 
@@ -140,25 +140,29 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	}
 	log.Info("Allocated trie memory caches", "clean", common.StorageSize(config.TrieCleanCache)*1024*1024, "dirty", common.StorageSize(config.TrieDirtyCache)*1024*1024)
 
+	// Transfer mining-related config to the ethash config.
+	ethashConfig := config.Ethash
+	ethashConfig.NotifyFull = config.Miner.NotifyFull
+
 	// Assemble the Ethereum object
 	chainDb, err := stack.OpenAndMergeDatabase("chaindata", config.DatabaseCache, config.DatabaseHandles,
 		config.DatabaseFreezer, config.DatabaseDiff, "eth/db/chaindata/", false, config.PersistDiff, config.PruneAncientData)
 	if err != nil {
 		return nil, err
 	}
-	if config.StateScheme == rawdb.HashScheme {
-		if err := pruner.RecoverPruning(stack.ResolvePath(""), chainDb, config.TriesInMemory); err != nil {
-			log.Error("Failed to recover state", "error", err)
-		}
+	chainConfig, genesisHash, genesisErr := core.SetupGenesisBlockWithOverride(chainDb, config.Genesis, config.OverrideBerlin, config.OverrideArrowGlacier, config.OverrideTerminalTotalDifficulty)
+	if _, ok := genesisErr.(*params.ConfigCompatError); genesisErr != nil && !ok {
+		return nil, genesisErr
 	}
-	chainConfig, genesisHash, err := core.LoadChainConfig(chainDb, config.Genesis)
-	if err != nil {
-		return nil, err
-	}
+	log.Info("Initialised chain configuration", "config", chainConfig)
 
+	if err := pruner.RecoverPruning(stack.ResolvePath(""), chainDb, stack.ResolvePath(config.TrieCleanCacheJournal), config.TriesInMemory); err != nil {
+		log.Error("Failed to recover state", "error", err)
+	}
+	merger := consensus.NewMerger(chainDb)
 	eth := &Ethereum{
 		config:            config,
-		merger:            consensus.NewMerger(chainDb),
+		merger:            merger,
 		chainDb:           chainDb,
 		eventMux:          stack.EventMux(),
 		accountManager:    stack.AccountManager(),
@@ -176,11 +180,8 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	if eth.APIBackend.allowUnprotectedTxs {
 		log.Info("Unprotected transactions allowed")
 	}
-	ethAPI := ethapi.NewBlockChainAPI(eth.APIBackend)
-	eth.engine, err = ethconfig.CreateConsensusEngine(chainConfig, chainDb, ethAPI, genesisHash)
-	if err != nil {
-		return nil, err
-	}
+	ethAPI := ethapi.NewPublicBlockChainAPI(eth.APIBackend)
+	eth.engine = ethconfig.CreateConsensusEngine(stack, chainConfig, &ethashConfig, config.Miner.Notify, config.Miner.Noverify, chainDb, ethAPI, genesisHash)
 
 	bcVersion := rawdb.ReadDatabaseVersion(chainDb)
 	var dbVer = "<nil>"
@@ -204,20 +205,22 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			EnablePreimageRecording: config.EnablePreimageRecording,
 		}
 		cacheConfig = &core.CacheConfig{
-			TrieCleanLimit:      config.TrieCleanCache,
-			TrieCleanNoPrefetch: config.NoPrefetch,
-			TrieDirtyLimit:      config.TrieDirtyCache,
-			TrieDirtyDisabled:   config.NoPruning,
-			TrieTimeLimit:       config.TrieTimeout,
-			NoTries:             config.TriesVerifyMode != core.LocalVerify,
-			SnapshotLimit:       config.SnapshotCache,
-			TriesInMemory:       config.TriesInMemory,
-			Preimages:           config.Preimages,
-			StateHistory:        config.StateHistory,
-			StateScheme:         config.StateScheme,
+			TrieCleanLimit:     config.TrieCleanCache,
+			TrieCleanJournal:   stack.ResolvePath(config.TrieCleanCacheJournal),
+			TrieCleanRejournal: config.TrieCleanCacheRejournal,
+			TrieDirtyLimit:     config.TrieDirtyCache,
+			TrieDirtyDisabled:  config.NoPruning,
+			TrieTimeLimit:      config.TrieTimeout,
+			NoTries:            config.TriesVerifyMode != core.LocalVerify,
+			SnapshotLimit:      config.SnapshotCache,
+			TriesInMemory:      config.TriesInMemory,
+			Preimages:          config.Preimages,
 		}
 	)
 	bcOps := make([]core.BlockChainOption, 0)
+	if config.DiffSync && !config.PipeCommit && config.TriesVerifyMode == core.LocalVerify {
+		bcOps = append(bcOps, core.EnableLightProcessor)
+	}
 	if config.PipeCommit {
 		bcOps = append(bcOps, core.EnablePipelineCommit)
 	}
@@ -230,62 +233,56 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 
 	peers := newPeerSet()
 	bcOps = append(bcOps, core.EnableBlockValidator(chainConfig, eth.engine, config.TriesVerifyMode, peers))
-	// Override the chain config with provided settings.
-	var overrides core.ChainOverrides
-	if config.OverrideCancun != nil {
-		overrides.OverrideCancun = config.OverrideCancun
-	}
-	if config.OverrideVerkle != nil {
-		overrides.OverrideVerkle = config.OverrideVerkle
-	}
-	eth.blockchain, err = core.NewBlockChain(chainDb, cacheConfig, config.Genesis, &overrides, eth.engine, vmConfig, eth.shouldPreserve, &config.TransactionHistory, bcOps...)
+	eth.blockchain, err = core.NewBlockChain(chainDb, cacheConfig, chainConfig, eth.engine, vmConfig, eth.shouldPreserve, &config.TxLookupLimit, bcOps...)
 	if err != nil {
 		return nil, err
 	}
-	eth.bloomIndexer.Start(eth.blockchain)
-
-	if config.BlobPool.Datadir != "" {
-		config.BlobPool.Datadir = stack.ResolvePath(config.BlobPool.Datadir)
+	// Rewind the chain in case of an incompatible config upgrade.
+	if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
+		log.Warn("Rewinding chain to upgrade configuration", "err", compat)
+		eth.blockchain.SetHead(compat.RewindTo)
+		rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
 	}
-	// TODO(Nathan): blob is not ready now, it will cause panic.
-	// blobPool := blobpool.New(config.BlobPool, eth.blockchain)
+	eth.bloomIndexer.Start(eth.blockchain)
 
 	if config.TxPool.Journal != "" {
 		config.TxPool.Journal = stack.ResolvePath(config.TxPool.Journal)
 	}
-	legacyPool := legacypool.New(config.TxPool, eth.blockchain)
+	eth.txPool = core.NewTxPool(config.TxPool, chainConfig, eth.blockchain)
 
-	// TODO(Nathan): eth.txPool, err = txpool.New(new(big.Int).SetUint64(config.TxPool.PriceLimit), eth.blockchain, []txpool.SubPool{legacyPool, blobPool})
-	eth.txPool, err = txpool.New(new(big.Int).SetUint64(config.TxPool.PriceLimit), eth.blockchain, []txpool.SubPool{legacyPool})
-	if err != nil {
-		return nil, err
-	}
 	// Permit the downloader to use the trie cache allowance during fast sync
 	cacheLimit := cacheConfig.TrieCleanLimit + cacheConfig.TrieDirtyLimit + cacheConfig.SnapshotLimit
+	checkpoint := config.Checkpoint
+	if checkpoint == nil {
+		checkpoint = params.TrustedCheckpoints[genesisHash]
+	}
+
 	if eth.handler, err = newHandler(&handlerConfig{
 		Database:               chainDb,
 		Chain:                  eth.blockchain,
 		TxPool:                 eth.txPool,
-		Merger:                 eth.merger,
+		Merger:                 merger,
 		Network:                config.NetworkId,
 		Sync:                   config.SyncMode,
 		BloomCache:             uint64(cacheLimit),
 		EventMux:               eth.eventMux,
-		RequiredBlocks:         config.RequiredBlocks,
+		Checkpoint:             checkpoint,
+		Whitelist:              config.Whitelist,
 		DirectBroadcast:        config.DirectBroadcast,
+		DiffSync:               config.DiffSync,
 		DisablePeerTxBroadcast: config.DisablePeerTxBroadcast,
 		PeerSet:                peers,
 	}); err != nil {
 		return nil, err
 	}
 
-	eth.miner = miner.New(eth, &config.Miner, eth.blockchain.Config(), eth.EventMux(), eth.engine, eth.isLocalBlock)
+	eth.miner = miner.New(eth, &config.Miner, chainConfig, eth.EventMux(), eth.engine, eth.isLocalBlock)
 	eth.miner.SetExtra(makeExtraData(config.Miner.ExtraData))
 
 	// Create voteManager instance
 	if posa, ok := eth.engine.(consensus.PoSA); ok {
 		// Create votePool instance
-		votePool := vote.NewVotePool(eth.blockchain, posa)
+		votePool := vote.NewVotePool(chainConfig, eth.blockchain, posa)
 		eth.votePool = votePool
 		if parlia, ok := eth.engine.(*parlia.Parlia); ok {
 			if !config.Miner.DisableVoteAttestation {
@@ -307,7 +304,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 			blsPasswordPath := stack.ResolvePath(conf.BLSPasswordFile)
 			blsWalletPath := stack.ResolvePath(conf.BLSWalletDir)
 			voteJournalPath := stack.ResolvePath(conf.VoteJournalDir)
-			if _, err := vote.NewVoteManager(eth, eth.blockchain, votePool, voteJournalPath, blsPasswordPath, blsWalletPath, posa); err != nil {
+			if _, err := vote.NewVoteManager(eth, chainConfig, eth.blockchain, votePool, voteJournalPath, blsPasswordPath, blsWalletPath, posa); err != nil {
 				log.Error("Failed to Initialize voteManager", "err", err)
 				return nil, err
 			}
@@ -341,7 +338,7 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 	}
 
 	// Start the RPC service
-	eth.netRPCService = ethapi.NewNetAPI(eth.p2pServer, config.NetworkId)
+	eth.netRPCService = ethapi.NewPublicNetAPI(eth.p2pServer, config.NetworkId)
 
 	// Register the backend on the node
 	stack.RegisterAPIs(eth.APIs())
@@ -383,25 +380,47 @@ func (s *Ethereum) APIs() []rpc.API {
 	return append(apis, []rpc.API{
 		{
 			Namespace: "eth",
-			Service:   NewEthereumAPI(s),
+			Version:   "1.0",
+			Service:   NewPublicEthereumAPI(s),
+			Public:    true,
+		}, {
+			Namespace: "eth",
+			Version:   "1.0",
+			Service:   NewPublicMinerAPI(s),
+			Public:    true,
+		}, {
+			Namespace: "eth",
+			Version:   "1.0",
+			Service:   downloader.NewPublicDownloaderAPI(s.handler.downloader, s.eventMux),
+			Public:    true,
 		}, {
 			Namespace: "miner",
-			Service:   NewMinerAPI(s),
+			Version:   "1.0",
+			Service:   NewPrivateMinerAPI(s),
+			Public:    false,
 		}, {
 			Namespace: "eth",
-			Service:   downloader.NewDownloaderAPI(s.handler.downloader, s.eventMux),
-		}, {
-			Namespace: "eth",
-			Service:   filters.NewFilterAPI(filters.NewFilterSystem(s.APIBackend, filters.Config{}), false, s.config.RangeLimit),
+			Version:   "1.0",
+			Service:   filters.NewPublicFilterAPI(s.APIBackend, false, 5*time.Minute, s.config.RangeLimit),
+			Public:    true,
 		}, {
 			Namespace: "admin",
-			Service:   NewAdminAPI(s),
+			Version:   "1.0",
+			Service:   NewPrivateAdminAPI(s),
 		}, {
 			Namespace: "debug",
-			Service:   NewDebugAPI(s),
+			Version:   "1.0",
+			Service:   NewPublicDebugAPI(s),
+			Public:    true,
+		}, {
+			Namespace: "debug",
+			Version:   "1.0",
+			Service:   NewPrivateDebugAPI(s),
 		}, {
 			Namespace: "net",
+			Version:   "1.0",
 			Service:   s.netRPCService,
+			Public:    true,
 		},
 	}...)
 }
@@ -418,7 +437,19 @@ func (s *Ethereum) Etherbase() (eb common.Address, err error) {
 	if etherbase != (common.Address{}) {
 		return etherbase, nil
 	}
-	return common.Address{}, errors.New("etherbase must be explicitly specified")
+	if wallets := s.AccountManager().Wallets(); len(wallets) > 0 {
+		if accounts := wallets[0].Accounts(); len(accounts) > 0 {
+			etherbase := accounts[0].Address
+
+			s.lock.Lock()
+			s.etherbase = etherbase
+			s.lock.Unlock()
+
+			log.Info("Etherbase automatically configured", "address", etherbase)
+			return etherbase, nil
+		}
+	}
+	return common.Address{}, fmt.Errorf("etherbase must be explicitly specified")
 }
 
 // isLocalBlock checks whether the specified block is mined
@@ -490,14 +521,25 @@ func (s *Ethereum) SetEtherbase(etherbase common.Address) {
 // StartMining starts the miner with the given number of CPU threads. If mining
 // is already running, this method adjust the number of threads allowed to use
 // and updates the minimum price required by the transaction pool.
-func (s *Ethereum) StartMining() error {
+func (s *Ethereum) StartMining(threads int) error {
+	// Update the thread count within the consensus engine
+	type threaded interface {
+		SetThreads(threads int)
+	}
+	if th, ok := s.engine.(threaded); ok {
+		log.Info("Updated mining threads", "threads", threads)
+		if threads == 0 {
+			threads = -1 // Disable the miner from within
+		}
+		th.SetThreads(threads)
+	}
 	// If the miner was not running, initialize it
 	if !s.IsMining() {
 		// Propagate the initial price point to the transaction pool
 		s.lock.RLock()
 		price := s.gasPrice
 		s.lock.RUnlock()
-		s.txPool.SetGasTip(price)
+		s.txPool.SetGasPrice(price)
 
 		// Configure the local mining address
 		eb, err := s.Etherbase()
@@ -536,9 +578,9 @@ func (s *Ethereum) StartMining() error {
 		}
 		// If mining is started, we can disable the transaction rejection mechanism
 		// introduced to speed sync times.
-		s.handler.enableSyncedFeatures()
+		atomic.StoreUint32(&s.handler.acceptTxs, 1)
 
-		go s.miner.Start()
+		go s.miner.Start(eb)
 	}
 	return nil
 }
@@ -562,15 +604,15 @@ func (s *Ethereum) Miner() *miner.Miner { return s.miner }
 
 func (s *Ethereum) AccountManager() *accounts.Manager  { return s.accountManager }
 func (s *Ethereum) BlockChain() *core.BlockChain       { return s.blockchain }
-func (s *Ethereum) TxPool() *txpool.TxPool             { return s.txPool }
+func (s *Ethereum) TxPool() *core.TxPool               { return s.txPool }
 func (s *Ethereum) VotePool() *vote.VotePool           { return s.votePool }
 func (s *Ethereum) EventMux() *event.TypeMux           { return s.eventMux }
 func (s *Ethereum) Engine() consensus.Engine           { return s.engine }
 func (s *Ethereum) ChainDb() ethdb.Database            { return s.chainDb }
 func (s *Ethereum) IsListening() bool                  { return true } // Always listening
 func (s *Ethereum) Downloader() *downloader.Downloader { return s.handler.downloader }
-func (s *Ethereum) Synced() bool                       { return s.handler.acceptTxs.Load() }
-func (s *Ethereum) SetSynced()                         { s.handler.enableSyncedFeatures() }
+func (s *Ethereum) Synced() bool                       { return atomic.LoadUint32(&s.handler.acceptTxs) == 1 }
+func (s *Ethereum) SetSynced()                         { atomic.StoreUint32(&s.handler.acceptTxs, 1) }
 func (s *Ethereum) ArchiveMode() bool                  { return s.config.NoPruning }
 func (s *Ethereum) BloomIndexer() *core.ChainIndexer   { return s.bloomIndexer }
 func (s *Ethereum) Merger() *consensus.Merger          { return s.merger }
@@ -586,6 +628,10 @@ func (s *Ethereum) Protocols() []p2p.Protocol {
 	if !s.config.DisableSnapProtocol && s.config.SnapshotCache > 0 {
 		protos = append(protos, snap.MakeProtocols((*snapHandler)(s.handler), s.snapDialCandidates)...)
 	}
+	// diff protocol can still open without snap protocol
+	// if !s.config.DisableDiffProtocol {
+	// 	protos = append(protos, diff.MakeProtocols((*diffHandler)(s.handler), s.snapDialCandidates)...)
+	// }
 	if s.config.EnableTrustProtocol {
 		protos = append(protos, trust.MakeProtocols((*trustHandler)(s.handler), s.snapDialCandidates)...)
 	}
@@ -632,7 +678,7 @@ func (s *Ethereum) Stop() error {
 	// Then stop everything else.
 	s.bloomIndexer.Close()
 	close(s.closeBloomHandler)
-	s.txPool.Close()
+	s.txPool.Stop()
 	s.miner.Close()
 	s.blockchain.Stop()
 	s.engine.Close()

@@ -1,4 +1,4 @@
-// Copyright 2021 The go-ethereum Authors
+// Copyright 2020 The go-ethereum Authors
 // This file is part of the go-ethereum library.
 //
 // The go-ethereum library is free software: you can redistribute it and/or modify
@@ -89,7 +89,7 @@ type nodeHistoryEnc struct {
 	RedialWaitStart, RedialWaitEnd uint64
 }
 
-// QueryFunc sends a pre-negotiation query and blocks until a response arrives or timeout occurs.
+// queryFunc sends a pre-negotiation query and blocks until a response arrives or timeout occurs.
 // It returns 1 if the remote node has confirmed that connection is possible, 0 if not
 // possible and -1 if no response arrived (timeout).
 type QueryFunc func(*enode.Node) int
@@ -222,6 +222,7 @@ func (s *serverPoolIterator) Close() {
 func (s *ServerPool) AddMetrics(
 	suggestedTimeoutGauge, totalValueGauge, serverSelectableGauge, serverConnectedGauge metrics.Gauge,
 	sessionValueMeter, serverDialedMeter metrics.Meter) {
+
 	s.suggestedTimeoutGauge = suggestedTimeoutGauge
 	s.totalValueGauge = totalValueGauge
 	s.sessionValueMeter = sessionValueMeter
@@ -302,7 +303,7 @@ func (s *ServerPool) addPreNegFilter(input enode.Iterator, query QueryFunc) enod
 	})
 }
 
-// Start starts the server pool. Note that NodeStateMachine should be started first.
+// start starts the server pool. Note that NodeStateMachine should be started first.
 func (s *ServerPool) Start() {
 	s.ns.Start()
 	for _, iter := range s.mixSources {
@@ -336,7 +337,7 @@ func (s *ServerPool) Start() {
 	atomic.StoreUint32(&s.started, 1)
 }
 
-// Stop stops the server pool
+// stop stops the server pool
 func (s *ServerPool) Stop() {
 	if s.fillSet != nil {
 		s.fillSet.Close()

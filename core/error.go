@@ -34,7 +34,10 @@ var (
 
 	errSideChainReceipts = errors.New("side blocks can't be accepted as ancient chain data")
 
-	// ErrAncestorHasNotBeenVerified is returned when block - 11 has not been verified by the remote verifier.
+	// ErrDiffLayerNotFound is returned when diff layer not found.
+	ErrDiffLayerNotFound = errors.New("diff layer not found")
+
+	// ErrDiffLayerNotFound is returned when block - 11 has not been verified by the remote verifier.
 	ErrAncestorHasNotBeenVerified = errors.New("block ancestor has not been verified")
 
 	// ErrCurrentBlockNotFound is returned when current block not found.
@@ -72,10 +75,6 @@ var (
 	// have enough funds for transfer(topmost call only).
 	ErrInsufficientFundsForTransfer = errors.New("insufficient funds for transfer")
 
-	// ErrMaxInitCodeSizeExceeded is returned if creation transaction provides the init code bigger
-	// than init code size limit.
-	ErrMaxInitCodeSizeExceeded = errors.New("max initcode size exceeded")
-
 	// ErrInsufficientFunds is returned if the total cost of executing a transaction
 	// is higher than the balance of the user's account.
 	ErrInsufficientFunds = errors.New("insufficient funds for gas * price + value")
@@ -104,13 +103,9 @@ var (
 	ErrFeeCapVeryHigh = errors.New("max fee per gas higher than 2^256-1")
 
 	// ErrFeeCapTooLow is returned if the transaction fee cap is less than the
-	// base fee of the block.
+	// the base fee of the block.
 	ErrFeeCapTooLow = errors.New("max fee per gas less than block base fee")
 
 	// ErrSenderNoEOA is returned if the sender of a transaction is a contract.
 	ErrSenderNoEOA = errors.New("sender not an eoa")
-
-	// ErrBlobFeeCapTooLow is returned if the transaction fee cap is less than the
-	// blob gas fee of the block.
-	ErrBlobFeeCapTooLow = errors.New("max fee per blob gas less than block blob gas fee")
 )

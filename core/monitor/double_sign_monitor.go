@@ -16,13 +16,13 @@ const (
 
 func NewDoubleSignMonitor() *DoubleSignMonitor {
 	return &DoubleSignMonitor{
-		headerNumbers: prque.New[int64, *types.Header](nil),
+		headerNumbers: prque.New(nil),
 		headers:       make(map[uint64]*types.Header, MaxCacheHeader),
 	}
 }
 
 type DoubleSignMonitor struct {
-	headerNumbers *prque.Prque[int64, *types.Header]
+	headerNumbers *prque.Prque
 	headers       map[uint64]*types.Header
 }
 
@@ -50,7 +50,8 @@ func (m *DoubleSignMonitor) isDoubleSignHeaders(h1, h2 *types.Header) (bool, err
 }
 
 func (m *DoubleSignMonitor) deleteOldHeader() {
-	h, _ := m.headerNumbers.Pop()
+	v, _ := m.headerNumbers.Pop()
+	h := v.(*types.Header)
 	delete(m.headers, h.Number.Uint64())
 }
 

@@ -19,11 +19,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"io/ioutil"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/cmd/utils"
-	"github.com/urfave/cli/v2"
+	"gopkg.in/urfave/cli.v1"
 )
 
 // getPassphrase obtains a passphrase given by the user.  It first checks the
@@ -33,7 +33,7 @@ func getPassphrase(ctx *cli.Context, confirmation bool) string {
 	// Look for the --passwordfile flag.
 	passphraseFile := ctx.String(passphraseFlag.Name)
 	if passphraseFile != "" {
-		content, err := os.ReadFile(passphraseFile)
+		content, err := ioutil.ReadFile(passphraseFile)
 		if err != nil {
 			utils.Fatalf("Failed to read password file '%s': %v",
 				passphraseFile, err)

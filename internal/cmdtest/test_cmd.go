@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/exec"
 	"regexp"
@@ -55,13 +56,13 @@ type TestCmd struct {
 	Err error
 }
 
-var id atomic.Int32
+var id int32
 
 // Run exec's the current binary using name as argv[0] which will trigger the
 // reexec init function for that name (e.g. "geth-test" in cmd/geth/run_test.go)
 func (tt *TestCmd) Run(name string, args ...string) {
-	id.Add(1)
-	tt.stderr = &testlogger{t: tt.T, name: fmt.Sprintf("%d", id.Load())}
+	id := atomic.AddInt32(&id, 1)
+	tt.stderr = &testlogger{t: tt.T, name: fmt.Sprintf("%d", id)}
 	tt.cmd = &exec.Cmd{
 		Path:   reexec.Self(),
 		Args:   append([]string{name}, args...),
@@ -183,7 +184,7 @@ func (tt *TestCmd) ExpectRegexp(regex string) (*regexp.Regexp, []string) {
 func (tt *TestCmd) ExpectExit() {
 	var output []byte
 	tt.withKillTimeout(func() {
-		output, _ = io.ReadAll(tt.stdout)
+		output, _ = ioutil.ReadAll(tt.stdout)
 	})
 	tt.WaitExit()
 	if tt.Cleanup != nil {
@@ -237,7 +238,7 @@ func (tt *TestCmd) Kill() {
 }
 
 func (tt *TestCmd) withKillTimeout(fn func()) {
-	timeout := time.AfterFunc(30*time.Second, func() {
+	timeout := time.AfterFunc(5*time.Second, func() {
 		tt.Log("killing the child process (timeout)")
 		tt.Kill()
 	})

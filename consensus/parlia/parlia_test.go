@@ -125,6 +125,7 @@ func simulateValidatorOutOfService(totalValidators int, downValidators int) {
 }
 
 func producerBlockDelay(candidates map[int]bool, height, numOfValidators int) (int, uint64) {
+
 	s := rand.NewSource(int64(height))
 	r := rand.New(s)
 	n := numOfValidators
@@ -219,6 +220,7 @@ func (b *MockBlock) GetJustifiedNumberAndHash() (uint64, common.Hash, error) {
 			justifiedBlock = curBlock.parent
 			break
 		}
+
 	}
 
 	return justifiedBlock.blockNumber, justifiedBlock.blockHash, nil

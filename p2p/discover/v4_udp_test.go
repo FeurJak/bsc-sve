@@ -165,6 +165,7 @@ func TestUDPv4_responseTimeouts(t *testing.T) {
 	test := newUDPTest(t)
 	defer test.close()
 
+	rand.Seed(time.Now().UnixNano())
 	randomDuration := func(max time.Duration) time.Duration {
 		return time.Duration(rand.Int63n(int64(max)))
 	}
@@ -312,7 +313,7 @@ func TestUDPv4_findnodeMultiReply(t *testing.T) {
 	test.table.db.UpdateLastPingReceived(rid, test.remoteaddr.IP, time.Now())
 
 	// queue a pending findnode request
-	resultc, errc := make(chan []*node, 1), make(chan error, 1)
+	resultc, errc := make(chan []*node), make(chan error)
 	go func() {
 		rid := encodePubkey(&test.remotekey.PublicKey).id()
 		ns, err := test.udp.findnode(rid, test.remoteaddr, testTarget)
@@ -394,7 +395,7 @@ func TestUDPv4_pingMatchIP(t *testing.T) {
 func TestUDPv4_successfulPing(t *testing.T) {
 	test := newUDPTest(t)
 	added := make(chan *node, 1)
-	test.table.nodeAddedHook = func(b *bucket, n *node) { added <- n }
+	test.table.nodeAddedHook = func(n *node) { added <- n }
 	defer test.close()
 
 	// The remote side sends a ping packet to initiate the exchange.
@@ -489,7 +490,7 @@ func TestUDPv4_EIP868(t *testing.T) {
 			t.Fatalf("invalid record: %v", err)
 		}
 		if !reflect.DeepEqual(n, wantNode) {
-			t.Fatalf("wrong node in ENRResponse: %v", n)
+			t.Fatalf("wrong node in enrResponse: %v", n)
 		}
 	})
 }

@@ -1,4 +1,4 @@
-// Copyright 2020 The go-ethereum Authors
+// Copyright 2015 The go-ethereum Authors
 // This file is part of the go-ethereum library.
 //
 // The go-ethereum library is free software: you can redistribute it and/or modify
@@ -19,11 +19,13 @@ package eth
 import (
 	"fmt"
 	"math/big"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/eth/fetcher"
 	"github.com/ethereum/go-ethereum/eth/protocols/eth"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 )
@@ -51,7 +53,7 @@ func (h *ethHandler) PeerInfo(id enode.ID) interface{} {
 // AcceptTxs retrieves whether transaction processing is enabled on the node
 // or if inbound transactions should simply be dropped.
 func (h *ethHandler) AcceptTxs() bool {
-	return h.acceptTxs.Load()
+	return atomic.LoadUint32(&h.acceptTxs) == 1
 }
 
 // Handle is invoked from a peer's message handler when it receives a new remote
@@ -66,11 +68,8 @@ func (h *ethHandler) Handle(peer *eth.Peer, packet eth.Packet) error {
 	case *eth.NewBlockPacket:
 		return h.handleBlockBroadcast(peer, packet.Block, packet.TD)
 
-	case *eth.NewPooledTransactionHashesPacket66:
+	case *eth.NewPooledTransactionHashesPacket:
 		return h.txFetcher.Notify(peer.ID(), *packet)
-
-	case *eth.NewPooledTransactionHashesPacket68:
-		return h.txFetcher.Notify(peer.ID(), packet.Hashes)
 
 	case *eth.TransactionsPacket:
 		return h.txFetcher.Enqueue(peer.ID(), *packet, false)
@@ -105,9 +104,17 @@ func (h *ethHandler) handleBlockAnnounces(peer *eth.Peer, hashes []common.Hash, 
 			unknownNumbers = append(unknownNumbers, numbers[i])
 		}
 	}
+	// self support diff sync
+	var diffFetcher fetcher.DiffRequesterFn
+	if h.diffSync {
+		// the peer support diff protocol
+		if ep := h.peers.peer(peer.ID()); ep != nil && ep.diffExt != nil {
+			diffFetcher = ep.diffExt.RequestDiffLayers
+		}
+	}
 
 	for i := 0; i < len(unknownHashes); i++ {
-		h.blockFetcher.Notify(peer.ID(), unknownHashes[i], unknownNumbers[i], time.Now(), peer.RequestOneHeader, peer.RequestBodies)
+		h.blockFetcher.Notify(peer.ID(), unknownHashes[i], unknownNumbers[i], time.Now(), peer.RequestOneHeader, peer.RequestBodies, diffFetcher)
 	}
 	return nil
 }
@@ -135,7 +142,7 @@ func (h *ethHandler) handleBlockBroadcast(peer *eth.Peer, block *types.Block, td
 	// Update the peer's total difficulty if better than the previous
 	if _, td := peer.Head(); trueTD.Cmp(td) > 0 {
 		peer.SetHead(trueHead, trueTD)
-		h.chainSync.handlePeerEvent()
+		h.chainSync.handlePeerEvent(peer)
 	}
 	return nil
 }

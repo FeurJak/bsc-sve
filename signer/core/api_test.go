@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/ioutil"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -55,6 +56,7 @@ func (ui *headlessUi) RegisterUIServer(api *core.UIServerAPI)       {}
 func (ui *headlessUi) OnApprovedTx(tx ethapi.SignTransactionResult) {}
 
 func (ui *headlessUi) ApproveTx(request *core.SignTxRequest) (core.SignTxResponse, error) {
+
 	switch <-ui.approveCh {
 	case "Y":
 		return core.SignTxResponse{request.Transaction, true}, nil
@@ -107,8 +109,11 @@ func (ui *headlessUi) ShowInfo(message string) {
 }
 
 func tmpDirName(t *testing.T) string {
-	d := t.TempDir()
-	d, err := filepath.EvalSymlinks(d)
+	d, err := ioutil.TempDir("", "eth-keystore-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err = filepath.EvalSymlinks(d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,6 +129,7 @@ func setup(t *testing.T) (*core.SignerAPI, *headlessUi) {
 	am := core.StartClefAccountManager(tmpDirName(t), true, true, "")
 	api := core.NewSignerAPI(am, 1337, true, ui, db, true, &storage.NoStorage{})
 	return api, ui
+
 }
 func createAccount(ui *headlessUi, api *core.SignerAPI, t *testing.T) {
 	ui.approveCh <- "Y"
@@ -137,6 +143,7 @@ func createAccount(ui *headlessUi, api *core.SignerAPI, t *testing.T) {
 }
 
 func failCreateAccountWithPassword(ui *headlessUi, api *core.SignerAPI, password string, t *testing.T) {
+
 	ui.approveCh <- "Y"
 	// We will be asked three times to provide a suitable password
 	ui.inputCh <- password
@@ -166,6 +173,7 @@ func failCreateAccount(ui *headlessUi, api *core.SignerAPI, t *testing.T) {
 func list(ui *headlessUi, api *core.SignerAPI, t *testing.T) ([]common.Address, error) {
 	ui.approveCh <- "A"
 	return api.List(context.Background())
+
 }
 
 func TestNewAcc(t *testing.T) {
@@ -317,4 +325,5 @@ func TestSignTx(t *testing.T) {
 	if bytes.Equal(res.Raw, res2.Raw) {
 		t.Error("Expected tx to be modified by UI")
 	}
+
 }
